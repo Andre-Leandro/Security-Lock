@@ -10,7 +10,7 @@ led_rojo = Pin(16, Pin.OUT)
 led_verde = Pin(17, Pin.OUT) 
 led_azul = Pin(18, Pin.OUT)  
 
-umbral_luz = 40000  
+umbral_luz = 5000 
 
 # Código predefinido para comparar
 codigo_correcto = ""
@@ -96,7 +96,6 @@ def oninput(machine):
                     led_verde.off()
                     sleep(0.2)
                     led_azul.on()
-                    
                     
                     if (pressed[0] == "#"):
                         print("Se reinicio el codigo ingresado")
@@ -204,16 +203,22 @@ while True:
             led_rojo.on()
             led_verde.on()
             led_azul.on()
-        
-        if not candado:
-            if valor_luz > umbral_luz:
-                dia = True
-            else:
-                dia = False
-        
-        if (time.time() - ultimo_ingreso_tiempo > tiempo_limite):
-            if codigo_ingresado != "":
-                print("Tiempo excedido. Borrando código ingresado...")
-                codigo_ingresado = ""
+        else:
+            if not candado:
+                if valor_luz > umbral_luz:
+                    led_rojo.on()
+                    led_verde.off()
+                    led_azul.off()
+                    dia = True
+                else:
+                    led_rojo.off()
+                    led_verde.off()
+                    led_azul.on()
+                    dia = False
+            
+            if (time.time() - ultimo_ingreso_tiempo > tiempo_limite):
+                if codigo_ingresado != "":
+                    print("Tiempo excedido. Borrando código ingresado...")
+                    codigo_ingresado = ""
 
     time.sleep(0.1)
