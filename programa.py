@@ -18,7 +18,7 @@ codigo_ingresado = ""
 dia = True
 candado = False
 ultimo_ingreso_tiempo = time.time()
-tiempo_limite = 7
+tiempo_limite = 7 #Segundos para que se reinicie el código ingresado
 
 
 # Función para manejar la entrada de teclas
@@ -46,18 +46,33 @@ def oninput(machine):
     if len(codigo_correcto)<4 :
         if len(pressed) > 0:
             codigo_correcto += pressed[0]  
+
+            led_rojo.off()
+            led_verde.off()
+            led_azul.off() 
+            sleep(0.2)
+             
             print("Ingresar clave (4 digitos):", codigo_correcto)
                 
             if len(codigo_correcto) == 4:
                 print("El codigo clave sera: ", codigo_correcto)
+                led_rojo.off()
+                led_verde.off()
+                led_azul.off() 
     #---------------Fin de la condicion
 
     else:
         if not candado:
             if dia:
                 print("El LED está en rojo, ignorando entrada de teclas.")
+                led_rojo.on()
+                led_verde.off()
+                led_azul.off() 
 
             else:
+                led_rojo.off()
+                led_verde.off()
+                led_azul.on() 
                 if len(pressed) > 0:
                     codigo_ingresado += pressed[0]
                     ultimo_ingreso_tiempo = time.time()
@@ -78,20 +93,20 @@ def oninput(machine):
                     if len(codigo_ingresado) == 4:
                         if codigo_ingresado == codigo_correcto:
                             print("Código correcto. Cambiando a verde.")
+                            led_azul.off()
+                            led_rojo.off()
+                            led_verde.on()
                             candado = not candado
-
                         else:
                             print("Código incorrecto. Reiniciando.")
+                            led_verde.off()
                             led_azul.off()
                             led_rojo.on()
                             sleep(1)
                             led_azul.on()
                             led_rojo.off()
 
-                        codigo_ingresado = ""
-                    
-
-
+                        codigo_ingresado = ""                  
         else:
             if len(pressed) > 0:
                 codigo_ingresado += pressed[0]
@@ -143,23 +158,16 @@ while True:
     # print(valor_luz)
     #print(valor_luz)
 
-
+    if len(codigo_correcto)<4:
+        led_rojo.on()
+        led_verde.on()
+        led_azul.on()
+    
     if not candado:
-      if valor_luz > umbral_luz:
- 
-          led_rojo.on()
-          led_verde.off()
-          led_azul.off()  
+        if valor_luz > umbral_luz:
           dia = True
-      else:
-          led_rojo.off()
-          led_verde.off()
-          led_azul.on()
+        else:
           dia = False
-    else:
-      led_rojo.off()
-      led_verde.on()
-      led_azul.off()
     
     if (time.time() - ultimo_ingreso_tiempo > tiempo_limite):
         if(codigo_ingresado != ""):
