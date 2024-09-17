@@ -1,8 +1,7 @@
-from machine import Pin, ADC
+from machine import Pin, ADC, 
 import time
 import rp2
 from rp2 import PIO
-from machine import Pin
 from time import sleep
 
 # Pines
@@ -18,7 +17,8 @@ codigo_correcto = ""
 codigo_ingresado = ""
 dia = True
 candado = False
-
+ultimo_ingreso_tiempo = time.time()
+tiempo_limite = 7
 
 
 # Función para manejar la entrada de teclas
@@ -30,6 +30,9 @@ def oninput(machine):
     global led_azul
     global led_rojo
     global led_verde
+    global ultimo_ingreso_tiempo
+    global tiempo_limite
+
     keys = machine.get()
     while machine.rx_fifo():
         keys = machine.get()
@@ -50,25 +53,53 @@ def oninput(machine):
     #---------------Fin de la condicion
 
     else:
-        if dia:
-            print("El LED está en rojo, ignorando entrada de teclas.")
+        if not candado:
+            if dia:
+                print("El LED está en rojo, ignorando entrada de teclas.")
+
+            else:
+                if len(pressed) > 0:
+                    codigo_ingresado += pressed[0]
+                    ultimo_ingreso_tiempo = time.time()
+                    print("Código ingresado hasta ahora:", codigo_ingresado)
+                    
+                    #Prender luz con cada press del teclado
+                    led_azul.off()
+                    led_rojo.off()
+                    led_verde.off()
+                    sleep(0.2)
+                    led_azul.on()
+                    
+                    
+                    if (pressed[0] == "#"):
+                        print("Se reinicio el codigo ingresado")
+                        codigo_ingresado = ""
+                    # Control de codigo correcto
+                    if len(codigo_ingresado) == 4:
+                        if codigo_ingresado == codigo_correcto:
+                            print("Código correcto. Cambiando a verde.")
+                            candado = not candado
+
+                        else:
+                            print("Código incorrecto. Reiniciando.")
+                            led_azul.off()
+                            led_rojo.on()
+                            sleep(1)
+                            led_azul.on()
+                            led_rojo.off()
+
+                        codigo_ingresado = ""
+                    
+
 
         else:
             if len(pressed) > 0:
-                codigo_ingresado += pressed[0]  
-                print("Código ingresado hasta ahora:", codigo_ingresado)
-                led_azul.off()
-                led_rojo.off()
-                led_verde.off()
+                codigo_ingresado += pressed[0]
+                if (codigo_ingresado == "*"):
+                    candado = not candado
+                    print("Caja cerrada.")
+            codigo_ingresado = ""
                 
-                
-                if len(codigo_ingresado) == 4:
-                    if codigo_ingresado == codigo_correcto:
-                        print("Código correcto. Cambiando a verde.")
-                        candado = not candado
-                    else:
-                        print("Código incorrecto. Reiniciando.")
-                    codigo_ingresado = ""  
 
 
 @rp2.asm_pio(set_init=[PIO.IN_HIGH]*4)
@@ -129,4 +160,10 @@ while True:
       led_rojo.off()
       led_verde.on()
       led_azul.off()
+    
+    if (time.time() - ultimo_ingreso_tiempo > tiempo_limite):
+        if(codigo_ingresado != ""):
+            print("Tiempo excedido. Borrando codigo ingresado...")
+            codigo_ingresado = ""
+
     time.sleep(0.1)
