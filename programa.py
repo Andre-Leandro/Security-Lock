@@ -20,6 +20,13 @@ candado = False
 ultimo_ingreso_tiempo = time.time()
 tiempo_limite = 7 #Segundos para que se reinicie el código ingresado
 
+# Variables para control de intentos fallidos y alarma
+intentos_fallidos = 0
+ultimo_intento_fallido = time.time()
+alarma_activada = False
+inicio_alarma = 0
+duracion_alarma = 20  #Segundos para que se reinicie el código ingresado
+
 
 # Función para manejar la entrada de teclas
 def oninput(machine):
@@ -32,6 +39,11 @@ def oninput(machine):
     global led_verde
     global ultimo_ingreso_tiempo
     global tiempo_limite
+    global intentos_fallidos, ultimo_intento_fallido, alarma_activada, inicio_alarma
+
+    if alarma_activada:
+        print("Alarma activada. No se permiten nuevos intentos.")
+        return
 
     keys = machine.get()
     while machine.rx_fifo():
@@ -97,6 +109,7 @@ def oninput(machine):
                             led_rojo.off()
                             led_verde.on()
                             candado = not candado
+                            intentos_fallidos = 0
                         else:
                             print("Código incorrecto. Reiniciando.")
                             led_verde.off()
@@ -105,6 +118,14 @@ def oninput(machine):
                             sleep(1)
                             led_azul.on()
                             led_rojo.off()
+                            
+                            intentos_fallidos += 1
+                            ultimo_intento_fallido = time.time()
+                        
+                            if intentos_fallidos == 3:
+                                # Verificar si los 3 intentos fallidos fueron en los últimos 2 minutos
+                                if time.time() - ultimo_intento_fallido <= 120:
+                                    activar_alarma()
 
                         codigo_ingresado = ""                  
         else:
@@ -115,7 +136,12 @@ def oninput(machine):
                     print("Caja cerrada.")
             codigo_ingresado = ""
                 
-
+# Función para activar la alarma
+def activar_alarma():
+    global alarma_activada, inicio_alarma
+    print("¡ALERTA! Demasiados intentos fallidos. Activando alarma.")
+    alarma_activada = True
+    inicio_alarma = time.time()
 
 @rp2.asm_pio(set_init=[PIO.IN_HIGH]*4)
 def keypad():
@@ -155,23 +181,39 @@ print("Por favor, ingrese un código en el teclado numérico, o presione Ctrl+C 
 # Bucle principal
 while True:
     valor_luz = sensor_pin.read_u16()
-    # print(valor_luz)
-    #print(valor_luz)
-
-    if len(codigo_correcto)<4:
-        led_rojo.on()
-        led_verde.on()
-        led_azul.on()
     
-    if not candado:
-        if valor_luz > umbral_luz:
-          dia = True
-        else:
-          dia = False
-    
-    if (time.time() - ultimo_ingreso_tiempo > tiempo_limite):
-        if(codigo_ingresado != ""):
-            print("Tiempo excedido. Borrando codigo ingresado...")
+    # Alarma activada: cambiar colores rojo y azul cada 500 ms
+    if alarma_activada:
+        if (time.time() - inicio_alarma) >= duracion_alarma:
+            print("Tiempo de alarma terminado. Desactivando alarma.")
+            alarma_activada = False
             codigo_ingresado = ""
+            intentos_fallidos = 0
+        else:
+            # Intercalar colores cada 500 ms
+            led_rojo.on()
+            led_azul.off()
+            sleep(0.5)
+            led_rojo.off()
+            led_azul.on()
+            sleep(0.5)
+    
+    # Control de intentos fallidos y candado normal si no hay alarma
+    else:
+        if len(codigo_correcto) < 4:
+            led_rojo.on()
+            led_verde.on()
+            led_azul.on()
+        
+        if not candado:
+            if valor_luz > umbral_luz:
+                dia = True
+            else:
+                dia = False
+        
+        if (time.time() - ultimo_ingreso_tiempo > tiempo_limite):
+            if codigo_ingresado != "":
+                print("Tiempo excedido. Borrando código ingresado...")
+                codigo_ingresado = ""
 
     time.sleep(0.1)
