@@ -14,16 +14,22 @@ led_azul = Pin(18, Pin.OUT)
 umbral_luz = 40000  
 
 # Código predefinido para comparar
-codigo_correcto = "1234"
+codigo_correcto = ""
 codigo_ingresado = ""
 dia = True
 candado = False
 
+
+
 # Función para manejar la entrada de teclas
 def oninput(machine):
+    global codigo_correcto
     global codigo_ingresado
     global dia
     global candado
+    global led_azul
+    global led_rojo
+    global led_verde
     keys = machine.get()
     while machine.rx_fifo():
         keys = machine.get()
@@ -32,22 +38,37 @@ def oninput(machine):
     for i in range(len(key_names)):
         if (keys & (1 << i)):
             pressed.append(key_names[i])
-    
-    if dia:
-        print("El LED está en rojo, ignorando entrada de teclas.")
+
+    ##--------------Condicion para configurar el codigo del candado
+    if len(codigo_correcto)<4 :
+        if len(pressed) > 0:
+            codigo_correcto += pressed[0]  
+            print("Ingresar clave (4 digitos):", codigo_correcto)
+                
+            if len(codigo_correcto) == 4:
+                print("El codigo clave sera: ", codigo_correcto)
+    #---------------Fin de la condicion
 
     else:
-        if len(pressed) > 0:
-            codigo_ingresado += pressed[0]  
-            print("Código ingresado hasta ahora:", codigo_ingresado)
-            
-            if len(codigo_ingresado) == 4:
-                if codigo_ingresado == codigo_correcto:
-                    print("Código correcto. Cambiando a verde.")
-                    candado = not candado
-                else:
-                    print("Código incorrecto. Reiniciando.")
-                codigo_ingresado = ""  
+        if dia:
+            print("El LED está en rojo, ignorando entrada de teclas.")
+
+        else:
+            if len(pressed) > 0:
+                codigo_ingresado += pressed[0]  
+                print("Código ingresado hasta ahora:", codigo_ingresado)
+                led_azul.off()
+                led_rojo.off()
+                led_verde.off()
+                
+                
+                if len(codigo_ingresado) == 4:
+                    if codigo_ingresado == codigo_correcto:
+                        print("Código correcto. Cambiando a verde.")
+                        candado = not candado
+                    else:
+                        print("Código incorrecto. Reiniciando.")
+                    codigo_ingresado = ""  
 
 
 @rp2.asm_pio(set_init=[PIO.IN_HIGH]*4)
