@@ -8,24 +8,22 @@ from time import sleep
 sensor_pin = ADC(Pin(26))  
 led_rojo = Pin(16, Pin.OUT)  
 led_verde = Pin(17, Pin.OUT) 
-led_azul = Pin(18, Pin.OUT)  
+led_azul = Pin(18, Pin.OUT)
 
-umbral_luz = 5000 
-
-# Código predefinido para comparar
+umbral_luz = 40000 
 codigo_correcto = ""
 codigo_ingresado = ""
-dia = True
+dia = False
 candado = False
 ultimo_ingreso_tiempo = time.time()
-tiempo_limite = 7 #Segundos para que se reinicie el código ingresado
+tiempo_limite = 10
 
 # Variables para control de intentos fallidos y alarma
 intentos_fallidos = 0
 ultimo_intento_fallido = time.time()
 alarma_activada = False
 inicio_alarma = 0
-duracion_alarma = 20  #Segundos para que se reinicie el código ingresado
+duracion_alarma = 10  
 
 
 # Función para manejar la entrada de teclas
@@ -54,7 +52,6 @@ def oninput(machine):
         if (keys & (1 << i)):
             pressed.append(key_names[i])
 
-    ##--------------Condicion para configurar el codigo del candado
     if len(codigo_correcto)<4 :
         if len(pressed) > 0:
             codigo_correcto += pressed[0]  
@@ -71,11 +68,9 @@ def oninput(machine):
                 led_rojo.off()
                 led_verde.off()
                 led_azul.off() 
-    #---------------Fin de la condicion
-
     else:
         if not candado:
-            if dia:
+            if not dia:
                 print("El LED está en rojo, ignorando entrada de teclas.")
                 led_rojo.on()
                 led_verde.off()
@@ -89,8 +84,6 @@ def oninput(machine):
                     codigo_ingresado += pressed[0]
                     ultimo_ingreso_tiempo = time.time()
                     print("Código ingresado hasta ahora:", codigo_ingresado)
-                    
-                    #Prender luz con cada press del teclado
                     led_azul.off()
                     led_rojo.off()
                     led_verde.off()
@@ -100,6 +93,8 @@ def oninput(machine):
                     if (pressed[0] == "#"):
                         print("Se reinicio el codigo ingresado")
                         codigo_ingresado = ""
+                        
+                        
                     # Control de codigo correcto
                     if len(codigo_ingresado) == 4:
                         if codigo_ingresado == codigo_correcto:
@@ -122,7 +117,6 @@ def oninput(machine):
                             ultimo_intento_fallido = time.time()
                         
                             if intentos_fallidos == 3:
-                                # Verificar si los 3 intentos fallidos fueron en los últimos 2 minutos
                                 if time.time() - ultimo_intento_fallido <= 120:
                                     activar_alarma()
 
@@ -135,7 +129,6 @@ def oninput(machine):
                     print("Caja cerrada.")
             codigo_ingresado = ""
                 
-# Función para activar la alarma
 def activar_alarma():
     global alarma_activada, inicio_alarma
     print("¡ALERTA! Demasiados intentos fallidos. Activando alarma.")
@@ -177,11 +170,9 @@ sm.irq(oninput)
 
 print("Por favor, ingrese un código en el teclado numérico, o presione Ctrl+C para ingresar al REPL.")
 
-# Bucle principal
+
 while True:
     valor_luz = sensor_pin.read_u16()
-    
-    # Alarma activada: cambiar colores rojo y azul cada 500 ms
     if alarma_activada:
         if (time.time() - inicio_alarma) >= duracion_alarma:
             print("Tiempo de alarma terminado. Desactivando alarma.")
@@ -189,15 +180,12 @@ while True:
             codigo_ingresado = ""
             intentos_fallidos = 0
         else:
-            # Intercalar colores cada 500 ms
             led_rojo.on()
             led_azul.off()
-            sleep(0.5)
+            sleep(0.2)
             led_rojo.off()
             led_azul.on()
-            sleep(0.5)
-    
-    # Control de intentos fallidos y candado normal si no hay alarma
+            sleep(0.2)
     else:
         if len(codigo_correcto) < 4:
             led_rojo.on()
@@ -209,12 +197,13 @@ while True:
                     led_rojo.on()
                     led_verde.off()
                     led_azul.off()
-                    dia = True
+                    dia = False
+                    codigo_ingresado = ""
                 else:
                     led_rojo.off()
                     led_verde.off()
                     led_azul.on()
-                    dia = False
+                    dia = True
             
             if (time.time() - ultimo_ingreso_tiempo > tiempo_limite):
                 if codigo_ingresado != "":
