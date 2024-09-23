@@ -212,5 +212,7 @@ while True:
             if (time.time() - ultimo_ingreso_tiempo > tiempo_limite) and (ultimo_ingreso_tiempo != 0) :
                 if codigo_ingresado != "":
                     print("Tiempo excedido. Borrando código ingresado...")
+                    led_azul.off()
+                    sleep(0.2)
                     codigo_ingresado = ""
     time.sleep(0.01)
