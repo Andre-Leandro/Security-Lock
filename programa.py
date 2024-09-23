@@ -13,18 +13,19 @@ led_azul = Pin(18, Pin.OUT)
 umbral_luz = 40000 
 codigo_correcto = ""
 codigo_ingresado = ""
-dia = False
+dia = True
 candado = True
 ultimo_ingreso_tiempo = 0
 tiempo_limite = 10
+boot_mode = True 
 
 # Variables para control de intentos fallidos y alarma
 intentos_fallidos = 0
-ultimo_intento_fallido = time.time()
+ultimo_intento_fallido = [0, 0, 0]
+
 alarma_activada = False
 inicio_alarma = 0
 duracion_alarma = 10  
-
 
 # Función para manejar la entrada de teclas
 def oninput(machine):
@@ -37,7 +38,7 @@ def oninput(machine):
     global led_verde
     global ultimo_ingreso_tiempo
     global tiempo_limite
-    global intentos_fallidos, ultimo_intento_fallido, alarma_activada, inicio_alarma
+    global intentos_fallidos, ultimo_intento_fallido, alarma_activada, inicio_alarma, boot_mode
 
     if alarma_activada:
         print("Alarma activada. No se permiten nuevos intentos.")
@@ -51,69 +52,80 @@ def oninput(machine):
     for i in range(len(key_names)):
         if (keys & (1 << i)):
             pressed.append(key_names[i])
-
-    if len(codigo_correcto)<4 :
+            
+    if not dia:
+        print("El LED está en rojo, ignorando entrada de teclas.")
+    else:
         if len(pressed) > 0:
-            codigo_ingresado += pressed[0]  
-            led_rojo.off()
-            led_verde.off()
-            led_azul.off() 
-            sleep(0.2)
-             
-            print("Clave (4 digitos):", codigo_ingresado)
-                
-            if len(codigo_ingresado) == 4:
-                codigo_correcto = codigo_ingresado
-                print("El codigo clave sera: ", codigo_correcto)
+            if (pressed[0] == "#"):
+                print("Se reinicio el codigo ingresado")
+                codigo_ingresado = ""
+                return
+        if boot_mode :
+            if len(pressed) > 0:
+                codigo_ingresado += pressed[0]  
                 led_rojo.off()
                 led_verde.off()
                 led_azul.off() 
-    else:
-        if candado:
-            if not dia:
-                print("El LED está en rojo, ignorando entrada de teclas.")
-            else:
-                if len(pressed) > 0:
-                    if (pressed[0] == "#"):
-                        print("Se reinicio el codigo ingresado")
-                        codigo_ingresado = ""
-                        return
+                sleep(0.2)
+                 
+                print("Clave (4 digitos):", codigo_ingresado)
                     
-                    codigo_ingresado += pressed[0]
-                    ultimo_ingreso_tiempo = time.time()
-                    print("Código ingresado hasta ahora:", codigo_ingresado)
-                    led_azul.off()
+                if len(codigo_ingresado) == 4:
+                    codigo_correcto = codigo_ingresado
+                    codigo_ingresado = ""
+                    boot_mode = False
+                    print("El codigo clave sera: ", codigo_correcto)
                     led_rojo.off()
                     led_verde.off()
-                    sleep(0.2)
-                 
-                    # Control de codigo correcto
-                    if len(codigo_ingresado) == 4:
-                        if codigo_ingresado == codigo_correcto:
-                            print("Código correcto. Cambiando a verde.")
-                            candado = not candado
-                            intentos_fallidos = 0
-                        else:
-                            print("Código incorrecto. Reiniciando.")
-                            led_verde.off()
-                            led_azul.off()
-                            led_rojo.on()
-                            sleep(0.6)                            
-                            intentos_fallidos += 1
-                            ultimo_intento_fallido = time.time()
-                        
-                            if intentos_fallidos == 3:
-                                if time.time() - ultimo_intento_fallido <= 120:
-                                    activar_alarma()
-
-                        codigo_ingresado = ""                  
+                    led_azul.off() 
         else:
-            if len(pressed) > 0:
-                codigo_ingresado += pressed[0]
-                if (codigo_ingresado == "*"):
-                    candado = not candado
-                    print("Caja cerrada.")
-            codigo_ingresado = ""
+            if candado:
+                if not dia:
+                    print("Boop.")
+                else:
+                    if len(pressed) > 0:
+                        if (pressed[0] == "#"):
+                            print("Se reinicio el codigo ingresado")
+                            codigo_ingresado = ""
+                            return
+                        
+                        codigo_ingresado += pressed[0]
+                        ultimo_ingreso_tiempo = time.time()
+                        print("Código ingresado hasta ahora:", codigo_ingresado)
+                        led_azul.off()
+                        led_rojo.off()
+                        led_verde.off()
+                        sleep(0.2)
+                     
+                        # Control de codigo correcto
+                        if len(codigo_ingresado) == 4:
+                            if codigo_ingresado == codigo_correcto:
+                                print("Código correcto. Cambiando a verde.")
+                                candado = not candado
+                                intentos_fallidos = 0
+                            else:
+                                print("Código incorrecto. Reiniciando.")                           
+                                intentos_fallidos += 1
+                                led_rojo.on()
+                                sleep(0.4) 
+                                ultimo_intento_fallido[intentos_fallidos-1] = time.time()
+                            
+                                if intentos_fallidos == 3:
+                                    if time.time() - ultimo_intento_fallido[0] <= 20:
+                                        activar_alarma()
+                                    else:
+                                        ultimo_intento_fallido[0] = ultimo_intento_fallido[1]
+                                        ultimo_intento_fallido[1] = ultimo_intento_fallido[2]
+                                        intentos_fallidos = 2
+                            codigo_ingresado = ""                  
+            else:
+                if len(pressed) > 0:
+                    codigo_ingresado += pressed[0]
+                    if (codigo_ingresado == "*"):
+                        candado = not candado
+                        print("Caja cerrada.")
+                codigo_ingresado = ""
                 
 def activar_alarma():
     global alarma_activada, inicio_alarma
@@ -170,7 +182,7 @@ while True:
             led_azul.on()
             sleep(0.2)
     else:
-        if len(codigo_correcto) < 4:
+        if boot_mode:
             led_rojo.on()
             led_verde.on()
             led_azul.on()
@@ -196,4 +208,4 @@ while True:
                 if codigo_ingresado != "":
                     print("Tiempo excedido. Borrando código ingresado...")
                     codigo_ingresado = ""
-    time.sleep(0.1)
+    time.sleep(0.01)
