@@ -53,12 +53,13 @@ def oninput(machine):
         if (keys & (1 << i)):
             pressed.append(key_names[i])
             
+    
     if not dia:
         print("El LED está en rojo, ignorando entrada de teclas.")
     else:
         if len(pressed) > 0:
-            if (pressed[0] == "#"):
-                print("Se reinicio el codigo ingresado")
+            if (pressed[0] == "#") and (candado == True):
+                print("Se reinicio el codigo ingresado", candado)
                 codigo_ingresado = ""
                 return
         if boot_mode :
@@ -67,10 +68,8 @@ def oninput(machine):
                 led_rojo.off()
                 led_verde.off()
                 led_azul.off() 
-                sleep(0.2)
-                 
-                print("Clave (4 digitos):", codigo_ingresado)
-                    
+                sleep(0.2)  
+                print("Clave (4 digitos):", codigo_ingresado)     
                 if len(codigo_ingresado) == 4:
                     codigo_correcto = codigo_ingresado
                     codigo_ingresado = ""
@@ -122,11 +121,17 @@ def oninput(machine):
             else:
                 if len(pressed) > 0:
                     codigo_ingresado += pressed[0]
-                    if (codigo_ingresado == "*"):
-                        candado = not candado
+                    if (codigo_ingresado[-1] == "*"):
                         print("Caja cerrada.")
-                codigo_ingresado = ""
-                
+                        candado = not candado
+                        codigo_ingresado = ""
+                    if (codigo_ingresado == "###"):
+                        boot_mode = True
+                        candado = True
+                        dia = True
+                        print("Ingrese la nueva clave.")
+                        codigo_ingresado = ""
+                             
 def activar_alarma():
     global alarma_activada, inicio_alarma
     print("¡ALERTA! Demasiados intentos fallidos. Activando alarma.")
