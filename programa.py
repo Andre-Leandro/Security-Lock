@@ -1,23 +1,52 @@
-from machine import Pin, ADC, 
+from machine import Pin, ADC
 import time
 import rp2
-from rp2 import PIO
-from time import sleep
+import uasyncio as asyncio
+import micro_monitoring
+
+
+class Led():
+    """Conjunto de los pines rojo, verde y azul del foco LED."""
+
+    def __init__(self):
+        """Inicializa los pines para cada color."""
+        self.rojo = Pin(16, Pin.OUT)
+        self.verde = Pin(17, Pin.OUT)
+        self.azul = Pin(18, Pin.OUT)
+
+    def set_off(self):
+        """Apaga los tres colores del led."""
+        self.rojo.off(), self.verde.off(), self.azul.off()
+
+    def set_white(self):
+        """Pone el LED de color blanco."""
+        self.rojo.on(), self.verde.on(), self.azul.on()
+
+    def set_red(self):
+        """Pone el LED de color rojo."""
+        self.rojo.on(), self.verde.off(), self.azul.off()
+
+    def set_blue(self):
+        """Pone el LED de color azul."""
+        self.rojo.off(), self.verde.off(), self.azul.on()
+
+    def set_green(self):
+        """Pone el LED de color verde."""
+        self.rojo.off(), self.verde.on(), self.azul.off()
+
 
 # Pines
-sensor_pin = ADC(Pin(26))  
-led_rojo = Pin(16, Pin.OUT)  
-led_verde = Pin(17, Pin.OUT) 
-led_azul = Pin(18, Pin.OUT)
+led = Led()
+sensor_pin = ADC(Pin(26))
 
-umbral_luz = 40000 
+umbral_luz = 40000
 codigo_correcto = ""
 codigo_ingresado = ""
 dia = True
 candado = True
 ultimo_ingreso_tiempo = 0
 tiempo_limite = 10
-boot_mode = True 
+boot_mode = True
 
 # Variables para control de intentos fallidos y alarma
 intentos_fallidos = 0
@@ -25,35 +54,35 @@ ultimo_intento_fallido = [0, 0, 0]
 
 alarma_activada = False
 inicio_alarma = 0
-duracion_alarma = 10  
+duracion_alarma = 10
 
-# Función para manejar la entrada de teclas
+key_names = "*7410852#963DCBA"
+
+
 def oninput(machine):
+    """Manejar la entrada de teclas."""
     global codigo_correcto
     global codigo_ingresado
     global dia
     global candado
-    global led_azul
-    global led_rojo
-    global led_verde
+    global led
     global ultimo_ingreso_tiempo
     global tiempo_limite
     global intentos_fallidos, ultimo_intento_fallido, alarma_activada, inicio_alarma, boot_mode
 
     if alarma_activada:
-        print("Alarma activada. No se permiten nuevos intentos.")
+        print("Alarma activada. No se permiten nuevos inputs.")
         return
 
     keys = machine.get()
     while machine.rx_fifo():
         keys = machine.get()
-    
+
     pressed = []
     for i in range(len(key_names)):
         if (keys & (1 << i)):
             pressed.append(key_names[i])
-            
-    
+
     if not dia:
         print("El LED está en rojo, ignorando entrada de teclas.")
     else:
@@ -62,22 +91,18 @@ def oninput(machine):
                 print("Se reinicio el codigo ingresado", candado)
                 codigo_ingresado = ""
                 return
-        if boot_mode :
+        if boot_mode:
             if len(pressed) > 0:
-                codigo_ingresado += pressed[0]  
-                led_rojo.off()
-                led_verde.off()
-                led_azul.off() 
-                sleep(0.2)  
-                print("Clave (4 digitos):", codigo_ingresado)     
+                codigo_ingresado += pressed[0]
+                led.set_white()
+                time.sleep(0.2)
+                print("Clave (4 digitos):", codigo_ingresado)
                 if len(codigo_ingresado) == 4:
                     codigo_correcto = codigo_ingresado
                     codigo_ingresado = ""
                     boot_mode = False
                     print("El codigo clave sera: ", codigo_correcto)
-                    led_rojo.off()
-                    led_verde.off()
-                    led_azul.off() 
+                    led.set_off()
         else:
             if candado:
                 if not dia:
@@ -88,15 +113,13 @@ def oninput(machine):
                             print("Se reinicio el codigo ingresado")
                             codigo_ingresado = ""
                             return
-                        
+
                         codigo_ingresado += pressed[0]
                         ultimo_ingreso_tiempo = time.time()
                         print("Código ingresado hasta ahora:", codigo_ingresado)
-                        led_azul.off()
-                        led_rojo.off()
-                        led_verde.off()
-                        sleep(0.2)
-                     
+                        led.set_off()
+                        time.sleep(0.2)
+
                         # Control de codigo correcto
                         if len(codigo_ingresado) == 4:
                             if codigo_ingresado == codigo_correcto:
@@ -104,12 +127,13 @@ def oninput(machine):
                                 candado = not candado
                                 intentos_fallidos = 0
                             else:
-                                print("Código incorrecto. Reiniciando.")                           
+                                print("Código incorrecto. Reiniciando.")
                                 intentos_fallidos += 1
-                                led_rojo.on()
-                                sleep(0.4) 
-                                ultimo_intento_fallido[intentos_fallidos-1] = time.time()
-                            
+                                led.set_red()
+                                time.sleep(0.4)
+                                ultimo_intento_fallido[intentos_fallidos -
+                                                       1] = time.time()
+
                                 if intentos_fallidos == 3:
                                     if time.time() - ultimo_intento_fallido[0] <= 20:
                                         activar_alarma()
@@ -117,7 +141,7 @@ def oninput(machine):
                                         ultimo_intento_fallido[0] = ultimo_intento_fallido[1]
                                         ultimo_intento_fallido[1] = ultimo_intento_fallido[2]
                                         intentos_fallidos = 2
-                            codigo_ingresado = ""                  
+                            codigo_ingresado = ""
             else:
                 if len(pressed) > 0:
                     codigo_ingresado += pressed[0]
@@ -131,14 +155,16 @@ def oninput(machine):
                         dia = True
                         print("Ingrese la nueva clave.")
                         codigo_ingresado = ""
-                             
+
+
 def activar_alarma():
     global alarma_activada, inicio_alarma
     print("¡ALERTA! Demasiados intentos fallidos. Activando alarma.")
     alarma_activada = True
     inicio_alarma = time.time()
 
-@rp2.asm_pio(set_init=[PIO.IN_HIGH]*4)
+
+@rp2.asm_pio(set_init=[rp2.PIO.IN_HIGH]*4)
 def keypad():
     wrap_target()
     set(y, 0)                             # 0
@@ -162,57 +188,67 @@ def keypad():
     jmp("1")                              # 15
     wrap()
 
-for i in range(10, 14):
-    Pin(i, Pin.IN, Pin.PULL_DOWN)
 
-key_names = "*7410852#963DCBA"
-sm = rp2.StateMachine(0, keypad, freq=2000, in_base=Pin(10, Pin.IN, Pin.PULL_DOWN), set_base=Pin(6))
-sm.active(1)
-sm.irq(oninput)
-print("Inicio de la caja fuerte, ingrese una clave para guardarla.")
+async def operations():
+    global alarma_activada, intentos_fallidos, led, dia
 
-while True:
-    valor_luz = sensor_pin.read_u16()
-    if alarma_activada:
-        if (time.time() - inicio_alarma) >= duracion_alarma:
-            print("Tiempo de alarma terminado. Desactivando alarma.")
-            alarma_activada = False
-            codigo_ingresado = ""
-            intentos_fallidos = 0
-        else:
-            led_rojo.on()
-            led_azul.off()
-            sleep(0.2)
-            led_rojo.off()
-            led_azul.on()
-            sleep(0.2)
-    else:
-        if boot_mode:
-            led_rojo.on()
-            led_verde.on()
-            led_azul.on()
-        else:
-            if candado:
-                if valor_luz > umbral_luz:
-                    led_rojo.on()
-                    led_verde.off()
-                    led_azul.off()
-                    dia = False
-                    codigo_ingresado = ""
-                else:
-                    led_rojo.off()
-                    led_verde.off()
-                    led_azul.on()
-                    dia = True
+    for i in range(10, 14):
+        Pin(i, Pin.IN, Pin.PULL_DOWN)
+
+    sm = rp2.StateMachine(0, keypad, freq=2000, in_base=Pin(
+        10, Pin.IN, Pin.PULL_DOWN), set_base=Pin(6))
+    sm.active(1)
+    sm.irq(oninput)
+    print("Inicio de la caja fuerte, ingrese una clave para guardarla.")
+
+    while True:
+        valor_luz = sensor_pin.read_u16()
+        if alarma_activada:
+            if (time.time() - inicio_alarma) >= duracion_alarma:
+                print("Tiempo de alarma terminado. Desactivando alarma.")
+                alarma_activada = False
+                codigo_ingresado = ""
+                intentos_fallidos = 0
             else:
-                led_rojo.off()
-                led_verde.on()
-                led_azul.off()
-                
-            if (time.time() - ultimo_ingreso_tiempo > tiempo_limite) and (ultimo_ingreso_tiempo != 0) :
-                if codigo_ingresado != "":
-                    print("Tiempo excedido. Borrando código ingresado...")
-                    led_azul.off()
-                    sleep(0.2)
-                    codigo_ingresado = ""
-    time.sleep(0.01)
+                led.rojo.on()
+                led.azul.off()
+                await asyncio.sleep(0.2)
+                led.rojo.off()
+                led.azul.on()
+                await asyncio.sleep(0.2)
+        else:
+            if boot_mode:
+                led.set_white()
+            else:
+                if candado:
+                    if valor_luz > umbral_luz:
+                        led.set_red()
+                        dia = False
+                        codigo_ingresado = ""
+                    else:
+                        led.set_blue()
+                        dia = True
+                else:
+                    led.set_green()
+
+                if (time.time() - ultimo_ingreso_tiempo > tiempo_limite) and (ultimo_ingreso_tiempo != 0):
+                    if codigo_ingresado != "":
+                        print("Tiempo excedido. Borrando código ingresado...")
+                        led.set_off()
+                        await asyncio.sleep(0.2)
+                        codigo_ingresado = ""
+        await asyncio.sleep(0.01)
+
+
+def get_app_data() -> dict:
+    """Retorna la información que será enviada al maestro."""
+    return {"hola": "10"}
+
+
+async def main():
+    await asyncio.gather(
+        operations(),                               # Código específico a cada grupo
+        micro_monitoring.monitoring(get_app_data)   # Monitoreo con el maestro
+    )
+
+asyncio.run(main())
