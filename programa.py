@@ -4,18 +4,28 @@ import rp2
 import uasyncio as asyncio
 import micro_monitoring
 
-FAILED_ATTEMPTS_TOLERANCE = 3
+FAILED_ATTEMPTS_LIMIT = 3
 """Cantidad de intentos erróneos que el candado tolera."""
-FAILED_ATTEMPTS_INTERVAL_SECONDS = 20
-"""Los últimos N segundos en los que puede haber hasta `FAILED_ATTEMPTS_TOLERANCE` intentos erróneos."""
+FAILED_ATTEMPTS_INTERVAL_MS = 5000
+"""En los últimos N milisegundos puede haber hasta `FAILED_ATTEMPTS_TOLERANCE` intentos erróneos."""
+ALARM_DURATION_MS = 10000
+"""Milisegundos que dura el estado de alarma."""
 LED_BLINK_DURATION_SECONDS = 0.2
 """Segundos que dura un instante en el que el LED parpadea."""
-ALARM_DURATION_SECONDS = 10
-"""Segundos que dura el estado de alarma."""
-KEY_INPUT_TIMEOUT_SECONDS = 10
-"""Segundos que persiste un input del tablero antes de restablecerse a nulo."""
-LIGHT_THRESHOLD = 40_000
-"""Valor digital máximo del sensor de iluminación aceptable."""
+LED_ALARMED_FLASH_DURATION_SECONDS = 0.5
+"""Segundos que dura cada color al alternar entre rojo y azul en el estado alarmado."""
+
+KEYPAD_KEY_NAMES = "*7410852#963DCBA"
+"""Teclas del tablero 4x4. Van de abajo a arriba, de izqquierda a derecha."""
+KEYPAD_INPUT_TIMEOUT_MS = 5000
+"""Milisegundos que persiste un input del tablero antes de restablecerse a nulo."""
+
+LDR_SENSOR = ADC(Pin(26))
+"""Pin para leer el output del LDR (fotosensor)."""
+RPI_VOLTAGE_REFERENCE_VOLTS = 3.3
+"""Voltaje (en volts) de referencia de la Raspberry Pi Pico W."""
+LIGHT_THRESHOLD_VOLTS = 1.5
+"""Valor en volts máximo que indica la mínima iluminación aceptable. A menor iluminación, el LDR deja pasar mayor voltaje."""
 
 
 class Led():
@@ -27,15 +37,15 @@ class Led():
         self.green = Pin(17, Pin.OUT)
         self.blue = Pin(18, Pin.OUT)
 
-    def set_off(self):
-        """Apaga todos los tres colores del foco LED."""
-        self.red.off(), self.green.off(), self.blue.off()
-
     def set_values(self, red: int, green: int, blue: int):
         """Enciende los colores con valor 1 o mayor. Si un parámetro es 0, lo apaga."""
         self.red.value(red)
         self.green.value(green)
         self.blue.value(blue)
+
+    def set_off(self):
+        """Apaga todos los tres colores del foco LED."""
+        self.set_values(0, 0, 0)
 
     def set_white(self):
         """Pone el LED de color blanco."""
@@ -61,7 +71,7 @@ class Led():
         self.set_values(r, g, b)
 
 
-class State():
+class State:
     """Estados posibles del candado inteligente."""
     DISABLED = "DISABLED"
     BOOT_MODE = "BOOT_MODE"
@@ -80,37 +90,22 @@ class SmartLock:
         self.password: str = ""
 
         # Variables para los estados del candado
+        self.state: State = State.DISABLED
         self.light_value: int = 0
-        self.state: State = State.BOOT_MODE
         self.led: Led = Led()
-        self.led.set_white()
+        self.led.set_off()
 
         # Variables para la alarma
         self.alarm_start_time: int = 0
         self.failed_attempts: list[int] = []
 
     def has_daylight(self):
-        print(self.light_value)
-        return self.light_value >= LIGHT_THRESHOLD
-
-    def is_disabled(self):
-        return self.state == State.DISABLED
-
-    def is_boot_mode(self):
-        return self.state == State.BOOT_MODE
-
-    def is_locked(self):
-        return self.state == State.LOCKED
-
-    def is_open(self):
-        return self.state == State.OPEN
-
-    def is_alarmed(self):
-        return self.state == State.ALARMED
+        return self.light_value <= LIGHT_THRESHOLD_VOLTS
 
     def to_disabled(self):
         """Transicionar al estado deshabilitado."""
         self.state = State.DISABLED
+        self.input = ""
         self.led.set_off()
 
     def to_boot_mode(self):
@@ -137,72 +132,111 @@ class SmartLock:
     def to_alarmed(self):
         """Transicionar al estado alarmado."""
         self.state = State.ALARMED
-        self.alarm_start_time = time.time()
+        self.input = ""
+        self.failed_attempts = []
+        self.alarm_start_time = time.ticks_ms()
         print("¡ALERTA! Demasiados intentos fallidos. Alarma activada.")
 
     def handle_failed_attempt(self):
         """Procesar un intento fallido de desbloquear el candado cerrado. Dispara la alarma si 
         alcanza los `FAILED_ATTEMPTS_TOLERANCE` en un tiempo `FAILED_ATTEMPTS_INTERVAL_SECONDS`."""
         self.led.set_red()
-        time.sleep(LED_BLINK_DURATION_SECONDS)
+        time.sleep(LED_BLINK_DURATION_SECONDS * 2)
         self.led.set_blue()
         self.input = ""
 
-        attempt_time = time.time()
+        attempt_time = time.ticks_ms()
         self.failed_attempts.append(attempt_time)
 
-        if len(self.failed_attempts) >= FAILED_ATTEMPTS_TOLERANCE:
-            # Calcular el tiempo que hubo entre los últimos N intentos fallidos
-            time_difference = attempt_time - self.failed_attempts[2]
-            if time_difference < FAILED_ATTEMPTS_INTERVAL_SECONDS:
-                # Disparar la alarma si hubo muchos intentos fallidos Y en poco tiempo
+        too_many_attempts = len(self.failed_attempts) >= FAILED_ATTEMPTS_LIMIT
+        if too_many_attempts:
+            # Calcular el tiempo que hubo entre los últimos intentos fallidos
+            oldest_attempt = self.failed_attempts[-FAILED_ATTEMPTS_LIMIT+1]
+            if time.ticks_diff(attempt_time, oldest_attempt) < FAILED_ATTEMPTS_INTERVAL_MS:
+                # Disparar la alarma si hubo muchos intentos fallidos en poco tiempo
                 self.to_alarmed()
+
+# Rutina ensamblada PIO para manejar el teclado matricial
+
+
+@rp2.asm_pio(set_init=[rp2.PIO.IN_HIGH]*4)
+def keypad():
+    wrap_target()       # Inicio del ciclo principal
+    set(y, 0)           # Inicializa el registro Y a 0
+    label("1")          # Etiqueta de reinicio del ciclo
+    mov(isr, null)      # Limpia el registro ISR
+    set(pindirs, 1)     # Activa la primera fila del teclado
+    in_(pins, 4)        # Lee 4 pines de entrada (columnas)
+    set(pindirs, 2)     # Activa la segunda fila del teclado
+    in_(pins, 4)        # Lee 4 pines de entrada (columnas)
+    set(pindirs, 4)     # Activa la tercera fila del teclado
+    in_(pins, 4)        # Lee 4 pines de entrada (columnas)
+    set(pindirs, 8)     # Activa la cuarta fila del teclado
+    in_(pins, 4)        # Lee 4 pines de entrada (columnas)
+    mov(x, isr)         # Mueve el contenido del ISR a X
+    jmp(x_not_y, "13")  # Salta a "13" si X es diferente de Y
+    jmp("1")            # Vuelve a "1" si no hay cambios
+    label("13")         # Etiqueta que indica un cambio detectado
+    push(block)         # Empuja el contenido del ISR en la pila
+    irq(0)              # Genera una interrupción IRQ 0
+    mov(y, x)           # Actualiza Y con el valor de X
+    jmp("1")            # Vuelve a "1" para seguir escaneando
+    wrap()              # Fin del ciclo principal
 
 
 sl = SmartLock()
 
-LIGHT_SENSOR = ADC(Pin(26))
-KEY_NAMES = "*7410852#963DCBA"
 
-
-def get_pressed_keys(machine) -> list[str]:
+def get_pressed_key(machine) -> str:
     """Obtiene las teclas ingresadas del tablero 4x4."""
     keys = machine.get()
     while machine.rx_fifo():
         keys = machine.get()
 
     pressed = []
-    for i in range(len(KEY_NAMES)):
+    for i in range(len(KEYPAD_KEY_NAMES)):
         if (keys & (1 << i)):
-            pressed.append(KEY_NAMES[i])
+            pressed.append(KEYPAD_KEY_NAMES[i])
 
     # Guardar el tiempo de este input para luego calcular el timeout por inactividad
-    sl.last_input_time = time.time() if len(pressed) > 0 else 0
-
-    return pressed
+    if len(pressed) > 0:
+        sl.last_input_time = time.ticks_ms()
+        return pressed[0]
+    else:
+        return ""
 
 
 def oninput(machine):
     """Manejar la entrada de teclas del tablero 4x4."""
-    if (sl.is_boot_mode() or sl.is_locked()) and not sl.has_daylight():
+    if sl.state == State.DISABLED or (sl.state == State.BOOT_MODE or sl.state == State.LOCKED) and not sl.has_daylight():
         print("No hay suficiente luz. Ignorando entrada de teclas.")
         sl.to_disabled()
         return
 
-    pressed = get_pressed_keys(machine)
+    key = get_pressed_key(machine)
 
-    if len(pressed) == 0:
+    if key == "":
         # No hay inputs para procesar
         return
 
-    key = pressed[0]
-
-    if sl.is_alarmed():
+    if sl.state == State.ALARMED:
         print("Alarma activada. No se permiten nuevos intentos.")
         return
 
     # Parpadeo del LED para dar feedback de la recepción del input
     sl.led.blink()
+    sl.input += key
+
+    if sl.state == State.OPEN:
+        if key == "*":
+            # Cerrar caja y pasar al estado cerrado
+            print("Cerrando caja.")
+            sl.to_locked()
+        if sl.input.endswith("###"):
+            # Reestablecer clave, pasar al estado inicialización
+            print("Restableciendo clave.")
+            sl.to_boot_mode()
+        return
 
     if key == "#":
         # Reestablecer el input
@@ -210,24 +244,12 @@ def oninput(machine):
         sl.input = ""
         return
 
-    if sl.is_open():
-        if key == "*":
-            # Cerrar caja y pasar al estado cerrado
-            print("Cerrando caja.")
-            sl.to_locked()
-        if sl.input == "###":
-            # Reestablecer clave, pasar al estado inicialización
-            print("Restableciendo clave.")
-            sl.to_boot_mode()
-        return
-
     if key == "*":
         # Ignorar teclas que no son dígitos
-        print("* ignorado.")
+        print("Input '*' ignorado.")
         return
 
-    if sl.is_boot_mode():
-        sl.input += key
+    if sl.state == State.BOOT_MODE:
         print("Clave:", sl.input)
         if len(sl.input) == 4:
             # PIN de seguridad establecido, pasar al estado cerrado
@@ -236,8 +258,7 @@ def oninput(machine):
             sl.to_locked()
             return
 
-    if sl.is_locked():
-        sl.input += key
+    if sl.state == State.LOCKED:
         if len(sl.input) == 4:
             if sl.input == sl.password:
                 # PIN correcto, pasar al estado abierto
@@ -250,34 +271,10 @@ def oninput(machine):
         return
 
 
-@rp2.asm_pio(set_init=[rp2.PIO.IN_HIGH]*4)
-def keypad():
-    wrap_target()
-    set(y, 0)                             # 0
-    label("1")
-    mov(isr, null)                        # 1
-    set(pindirs, 1)                       # 2
-    in_(pins, 4)                          # 3
-    set(pindirs, 2)                       # 4
-    in_(pins, 4)                          # 5
-    set(pindirs, 4)                       # 6
-    in_(pins, 4)                          # 7
-    set(pindirs, 8)                       # 8
-    in_(pins, 4)                          # 9
-    mov(x, isr)                           # 10
-    jmp(x_not_y, "13")                    # 11
-    jmp("1")                              # 12
-    label("13")
-    push(block)                           # 13
-    irq(0)
-    mov(y, x)                             # 14
-    jmp("1")                              # 15
-    wrap()
-
-
-def get_light_value():
-    """Devuelve el valor (digital) medido por el sensor de iluminación."""
-    return LIGHT_SENSOR.read_u16()
+def get_illumination_voltage():
+    """Devuelve el voltaje que el fotosensor LDR deja pasar. A mayor iluminación, menor voltaje."""
+    voltage = LDR_SENSOR.read_u16() / 65535 * RPI_VOLTAGE_REFERENCE_VOLTS
+    return voltage
 
 
 async def operations():
@@ -295,32 +292,39 @@ async def operations():
 
     while True:
         # Actualizar el valor del sensor de iluminación
-        # FIXME: valor del sensor de iluminación no es el que debería ser. Ni aunque lo tape con el dedo da valor bajo.
-        sl.light_value = get_light_value()
-        if not sl.has_daylight() and (sl.is_boot_mode() or sl.is_locked()):
+        sl.light_value = get_illumination_voltage()
+        if (sl.state == State.BOOT_MODE or sl.state == State.LOCKED) and not sl.has_daylight():
             # Si no hay suficiente luz en estado cerrado o inicialización, pasar al estado deshabilitado
-            print("hola")
             sl.to_disabled()
+            continue
 
-        if sl.is_alarmed():
-            if time.time() - sl.alarm_start_time >= ALARM_DURATION_SECONDS:
+        if sl.state == State.DISABLED and sl.has_daylight():
+            # Volvió la luz, salir del estado deshabilitado
+            if sl.password == "":
+                sl.to_boot_mode()
+            else:
+                sl.to_locked()
+
+        if sl.state == State.ALARMED:
+            duration = time.ticks_diff(time.ticks_ms(), sl.alarm_start_time)
+            if duration >= ALARM_DURATION_MS:
                 # Finalizar el estado alarmado
                 sl.to_locked()
                 print("Tiempo de alarma terminado. Alarma desactivada.")
             else:
-                sl.led.red.on()
-                sl.led.blue.off()
-                await asyncio.sleep(LED_BLINK_DURATION_SECONDS)
-                sl.led.red.off()
-                sl.led.blue.on()
-                await asyncio.sleep(LED_BLINK_DURATION_SECONDS)
+                sl.led.set_red()
+                await asyncio.sleep(LED_ALARMED_FLASH_DURATION_SECONDS)
+                sl.led.set_blue()
+                await asyncio.sleep(LED_ALARMED_FLASH_DURATION_SECONDS)
 
-        if sl.last_input_time != 0 and time.time() - sl.last_input_time > KEY_INPUT_TIMEOUT_SECONDS:
+        input_inactivity = time.ticks_diff(time.ticks_ms(), sl.last_input_time)
+        if input_inactivity > KEYPAD_INPUT_TIMEOUT_MS:
             # Timeout por inactividad
             if sl.input != "":
                 print("Tiempo excedido. Borrando código ingresado.")
                 sl.input = ""
                 sl.led.blink()
+
         await asyncio.sleep(0.01)
 
 
