@@ -6,17 +6,25 @@ import micro_monitoring
 
 FAILED_ATTEMPTS_LIMIT = 3
 """Cantidad de intentos erróneos que el candado tolera."""
-FAILED_ATTEMPTS_INTERVAL_MS = 5000
+FAILED_ATTEMPTS_INTERVAL_MS = 2 * 60 * 1000
 """En los últimos N milisegundos puede haber hasta `FAILED_ATTEMPTS_TOLERANCE` intentos erróneos."""
-ALARM_DURATION_MS = 10000
+ALARM_DURATION_MS = 5 * 60 * 1000
 """Milisegundos que dura el estado de alarma."""
 LED_BLINK_DURATION_SECONDS = 0.2
 """Segundos que dura un instante en el que el LED parpadea."""
 LED_ALARMED_FLASH_DURATION_SECONDS = 0.5
 """Segundos que dura cada color al alternar entre rojo y azul en el estado alarmado."""
 
-KEYPAD_KEY_NAMES = "*7410852#963DCBA"
-"""Teclas del tablero 4x4. Van de abajo a arriba, de izqquierda a derecha."""
+KEYPAD_ROWS = [Pin(i, Pin.OUT) for i in [9, 8, 7, 6]]
+"""Pines para leer las 4 filas del keypad."""
+KEYPAD_COLUMNS = [Pin(i, Pin.IN, Pin.PULL_DOWN) for i in [10, 11, 12, 13]]
+"""Pines para leer las 4 columnas del keypad."""
+KEYPAD_KEY_NAMES = [
+    ['1', '2', '3', 'A'],
+    ['4', '5', '6', 'B'],
+    ['7', '8', '9', 'C'],
+    ['*', '0', '#', 'D']]
+"""Mapa de las teclas del keypad 4x4. Las letras ABCD no se utilizan."""
 KEYPAD_INPUT_TIMEOUT_MS = 5000
 """Milisegundos que persiste un input del tablero antes de restablecerse a nulo."""
 
@@ -63,11 +71,11 @@ class Led():
         """Pone el LED de color verde."""
         self.set_values(0, 1, 0)
 
-    def blink(self):
+    async def blink(self):
         """Apaga el LED por un pequeño instante."""
         r, g, b = self.red.value(), self.green.value(), self.blue.value()
         self.set_off()
-        time.sleep(LED_BLINK_DURATION_SECONDS)
+        await asyncio.sleep(LED_BLINK_DURATION_SECONDS)
         self.set_values(r, g, b)
 
 
@@ -137,11 +145,11 @@ class SmartLock:
         self.alarm_start_time = time.ticks_ms()
         print("¡ALERTA! Demasiados intentos fallidos. Alarma activada.")
 
-    def handle_failed_attempt(self):
+    async def handle_failed_attempt(self):
         """Procesar un intento fallido de desbloquear el candado cerrado. Dispara la alarma si 
         alcanza los `FAILED_ATTEMPTS_TOLERANCE` en un tiempo `FAILED_ATTEMPTS_INTERVAL_SECONDS`."""
         self.led.set_red()
-        time.sleep(LED_BLINK_DURATION_SECONDS * 2)
+        await asyncio.sleep(LED_BLINK_DURATION_SECONDS * 2)
         self.led.set_blue()
         self.input = ""
 
@@ -156,66 +164,47 @@ class SmartLock:
                 # Disparar la alarma si hubo muchos intentos fallidos en poco tiempo
                 self.to_alarmed()
 
-# Rutina ensamblada PIO para manejar el teclado matricial
+
+# Estado de cada tecla del keypad 4x4. Si es `True`, está siendo presionada
+keypad_state = [[False for _ in range(4)] for _ in range(4)]
 
 
-@rp2.asm_pio(set_init=[rp2.PIO.IN_HIGH]*4)
-def keypad():
-    wrap_target()       # Inicio del ciclo principal
-    set(y, 0)           # Inicializa el registro Y a 0
-    label("1")          # Etiqueta de reinicio del ciclo
-    mov(isr, null)      # Limpia el registro ISR
-    set(pindirs, 1)     # Activa la primera fila del teclado
-    in_(pins, 4)        # Lee 4 pines de entrada (columnas)
-    set(pindirs, 2)     # Activa la segunda fila del teclado
-    in_(pins, 4)        # Lee 4 pines de entrada (columnas)
-    set(pindirs, 4)     # Activa la tercera fila del teclado
-    in_(pins, 4)        # Lee 4 pines de entrada (columnas)
-    set(pindirs, 8)     # Activa la cuarta fila del teclado
-    in_(pins, 4)        # Lee 4 pines de entrada (columnas)
-    mov(x, isr)         # Mueve el contenido del ISR a X
-    jmp(x_not_y, "13")  # Salta a "13" si X es diferente de Y
-    jmp("1")            # Vuelve a "1" si no hay cambios
-    label("13")         # Etiqueta que indica un cambio detectado
-    push(block)         # Empuja el contenido del ISR en la pila
-    irq(0)              # Genera una interrupción IRQ 0
-    mov(y, x)           # Actualiza Y con el valor de X
-    jmp("1")            # Vuelve a "1" para seguir escaneando
-    wrap()              # Fin del ciclo principal
+def read_keypad():
+    """Iterar las filas y columnas del tablero 4x4 para devolver una posible tecla presionada."""
+    for row_index, row_pin in enumerate(KEYPAD_ROWS):
+        # Poner la fila a HIGH
+        row_pin.value(1)
+        for col_index, col_pin in enumerate(KEYPAD_COLUMNS):
+            is_pressed = col_pin.value() == 1
+            was_being_pressed = keypad_state[row_index][col_index] == 1
+            if is_pressed != was_being_pressed:
+                keypad_state[row_index][col_index] = is_pressed
+
+                if is_pressed:
+                    # Se está apretando un botón que antes no estaba apretado, entonces es un input
+                    # Guardar el tiempo del input para luego calcular timeout por inactividad
+                    sl.last_input_time = time.ticks_ms()
+                    # Poner la fila de nuevo a LOW
+                    row_pin.value(0)
+                    return KEYPAD_KEY_NAMES[row_index][col_index]
+        # Poner la fila de nuevo a LOW
+        row_pin.value(0)
+    return None
 
 
 sl = SmartLock()
 
 
-def get_pressed_key(machine) -> str:
-    """Obtiene las teclas ingresadas del tablero 4x4."""
-    keys = machine.get()
-    while machine.rx_fifo():
-        keys = machine.get()
-
-    pressed = []
-    for i in range(len(KEYPAD_KEY_NAMES)):
-        if (keys & (1 << i)):
-            pressed.append(KEYPAD_KEY_NAMES[i])
-
-    # Guardar el tiempo de este input para luego calcular el timeout por inactividad
-    if len(pressed) > 0:
-        sl.last_input_time = time.ticks_ms()
-        return pressed[0]
-    else:
-        return ""
-
-
-def oninput(machine):
+async def handle_keypad_input():
     """Manejar la entrada de teclas del tablero 4x4."""
     if sl.state == State.DISABLED or (sl.state == State.BOOT_MODE or sl.state == State.LOCKED) and not sl.has_daylight():
         print("No hay suficiente luz. Ignorando entrada de teclas.")
         sl.to_disabled()
         return
 
-    key = get_pressed_key(machine)
+    key = read_keypad()
 
-    if key == "":
+    if key is None:
         # No hay inputs para procesar
         return
 
@@ -224,18 +213,19 @@ def oninput(machine):
         return
 
     # Parpadeo del LED para dar feedback de la recepción del input
-    sl.led.blink()
-    sl.input += key
+    await sl.led.blink()
 
     if sl.state == State.OPEN:
         if key == "*":
             # Cerrar caja y pasar al estado cerrado
             print("Cerrando caja.")
             sl.to_locked()
-        if sl.input.endswith("###"):
-            # Reestablecer clave, pasar al estado inicialización
-            print("Restableciendo clave.")
-            sl.to_boot_mode()
+        if key == "#":
+            sl.input += key
+            if sl.input.endswith("###"):
+                # Reestablecer clave, pasar al estado inicialización
+                print("Restableciendo clave.")
+                sl.to_boot_mode()
         return
 
     if key == "#":
@@ -248,6 +238,8 @@ def oninput(machine):
         # Ignorar teclas que no son dígitos
         print("Input '*' ignorado.")
         return
+
+    sl.input += key
 
     if sl.state == State.BOOT_MODE:
         print("Clave:", sl.input)
@@ -267,8 +259,7 @@ def oninput(machine):
             else:
                 # PIN incorrecto, agregar un intento fallido
                 print("Código incorrecto. Reiniciando input.")
-                sl.handle_failed_attempt()
-        return
+                await sl.handle_failed_attempt()
 
 
 def get_illumination_voltage():
@@ -280,17 +271,15 @@ def get_illumination_voltage():
 async def operations():
     """Funcionamiento del candado inteligente."""
 
-    # Instanciar pines
-    for i in range(10, 14):
-        Pin(i, Pin.IN, Pin.PULL_DOWN)
 
-    state_machine = rp2.StateMachine(0, keypad, freq=2000, in_base=Pin(
-        10, Pin.IN, Pin.PULL_DOWN), set_base=Pin(6))
-    state_machine.active(1)
-    state_machine.irq(oninput)
+async def operations():
+    """En cada tick, leer la entrada del keypad 4x4 y actualizar el estado del candado.
+    Luego, producir la salida del LED RGB en base al estado del candado y la iluminación del sensor LDR."""
     print("Caja fuerte iniciada. Registre su clave: ")
 
     while True:
+        await handle_keypad_input()
+
         # Actualizar el valor del sensor de iluminación
         sl.light_value = get_illumination_voltage()
         if (sl.state == State.BOOT_MODE or sl.state == State.LOCKED) and not sl.has_daylight():
@@ -323,7 +312,7 @@ async def operations():
             if sl.input != "":
                 print("Tiempo excedido. Borrando código ingresado.")
                 sl.input = ""
-                sl.led.blink()
+                await sl.led.blink()
 
         await asyncio.sleep(0.01)
 
