@@ -1,8 +1,8 @@
 from machine import Pin, ADC
 import time
-import rp2
 import uasyncio as asyncio
 import micro_monitoring
+
 
 FAILED_ATTEMPTS_LIMIT = 3
 """Cantidad de intentos erróneos que el candado tolera."""
@@ -100,6 +100,7 @@ class SmartLock:
         # Variables para los estados del candado
         self.state: State = State.DISABLED
         self.light_value: int = 0
+        self.ldr_enabled: bool = True
         self.led: Led = Led()
         self.led.set_off()
 
@@ -108,6 +109,10 @@ class SmartLock:
         self.failed_attempts: list[int] = []
 
     def has_daylight(self):
+        if not self.ldr_enabled:
+            # Si el fotosensor está desactivado, el candado funciona siempre
+            return True
+
         return self.light_value <= LIGHT_THRESHOLD_VOLTS
 
     def to_disabled(self):
@@ -127,7 +132,6 @@ class SmartLock:
         """Transicionar al estado cerrado."""
         self.state = State.LOCKED
         self.input = ""
-        self.failed_attempts = []
         self.led.set_blue()
 
     def to_open(self):
@@ -143,7 +147,15 @@ class SmartLock:
         self.input = ""
         self.failed_attempts = []
         self.alarm_start_time = time.ticks_ms()
-        print("¡ALERTA! Demasiados intentos fallidos. Alarma activada.")
+
+    def get_remaining_attempts(self):
+        current_time = time.ticks_ms()
+        # El arreglo de los tiempos de cada intento está ordenado de antiguo (menor) a reciente (mayor)
+        for idx, attempt_time in enumerate(self.failed_attempts):
+            # Solo contar el intento si sigue siendo relevante (si sigue estando en el intervalo de tiempo)
+            if time.ticks_diff(current_time, attempt_time) < FAILED_ATTEMPTS_INTERVAL_MS:
+                return FAILED_ATTEMPTS_LIMIT - len(self.failed_attempts[idx:])
+        return FAILED_ATTEMPTS_LIMIT
 
     async def handle_failed_attempt(self):
         """Procesar un intento fallido de desbloquear el candado cerrado. Dispara la alarma si 
@@ -156,13 +168,20 @@ class SmartLock:
         attempt_time = time.ticks_ms()
         self.failed_attempts.append(attempt_time)
 
-        too_many_attempts = len(self.failed_attempts) >= FAILED_ATTEMPTS_LIMIT
-        if too_many_attempts:
-            # Calcular el tiempo que hubo entre los últimos intentos fallidos
-            oldest_attempt = self.failed_attempts[-FAILED_ATTEMPTS_LIMIT+1]
-            if time.ticks_diff(attempt_time, oldest_attempt) < FAILED_ATTEMPTS_INTERVAL_MS:
-                # Disparar la alarma si hubo muchos intentos fallidos en poco tiempo
-                self.to_alarmed()
+        if self.get_remaining_attempts() == 0:
+            # Disparar la alarma si hubo muchos intentos fallidos en poco tiempo
+            print("🚨 ¡ALERTA!" +
+                  f" {FAILED_ATTEMPTS_LIMIT} intentos fallidos seguidos. Alarma activada.")
+            self.to_alarmed()
+
+
+sl = SmartLock()
+
+
+def get_illumination_voltage():
+    """Devuelve el voltaje que el fotosensor LDR deja pasar. A mayor iluminación, menor voltaje."""
+    voltage = LDR_SENSOR.read_u16() / 65535 * RPI_VOLTAGE_REFERENCE_VOLTS
+    return voltage
 
 
 # Estado de cada tecla del keypad 4x4. Si es `True`, está siendo presionada
@@ -192,61 +211,54 @@ def read_keypad():
     return None
 
 
-sl = SmartLock()
-
-
-async def handle_keypad_input():
+async def handle_keypad_input(key: str):
     """Manejar la entrada de teclas del tablero 4x4."""
-    if sl.state == State.DISABLED or (sl.state == State.BOOT_MODE or sl.state == State.LOCKED) and not sl.has_daylight():
-        print("No hay suficiente luz. Ignorando entrada de teclas.")
-        sl.to_disabled()
-        return
-
-    key = read_keypad()
-
     if key is None:
         # No hay inputs para procesar
         return
 
+    if sl.state == State.DISABLED or (sl.state == State.BOOT_MODE or sl.state == State.LOCKED) and not sl.has_daylight():
+        sl.to_disabled()
+        # No se aceptan inputs
+        return
+
     if sl.state == State.ALARMED:
-        print("Alarma activada. No se permiten nuevos intentos.")
+        print("Alarma sigue activada. Input deshabilitado hasta que termine.")
         return
 
     # Parpadeo del LED para dar feedback de la recepción del input
     await sl.led.blink()
 
     if sl.state == State.OPEN:
+        sl.input += key
         if key == "*":
             # Cerrar caja y pasar al estado cerrado
-            print("Cerrando caja.")
+            print("🔒 Caja de seguridad cerrada.")
             sl.to_locked()
         if key == "#":
-            sl.input += key
             if sl.input.endswith("###"):
-                # Reestablecer clave, pasar al estado inicialización
-                print("Restableciendo clave.")
+                # Reestablecer PIN, pasar al estado inicialización
+                print("PIN de seguridad reestablecido. Ingrese su nuevo PIN: ")
                 sl.to_boot_mode()
         return
 
     if key == "#":
         # Reestablecer el input
-        print("Input reestablecido a nulo.")
+        print("Input en blanco.")
         sl.input = ""
         return
 
     if key == "*":
         # Ignorar teclas que no son dígitos
-        print("Input '*' ignorado.")
         return
 
     sl.input += key
 
     if sl.state == State.BOOT_MODE:
-        print("Clave:", sl.input)
         if len(sl.input) == 4:
             # PIN de seguridad establecido, pasar al estado cerrado
             sl.password = sl.input
-            print("Código establecido: ", sl.password)
+            print(f"🔒 PIN de seguridad establecido: {sl.input}.")
             sl.to_locked()
             return
 
@@ -254,41 +266,36 @@ async def handle_keypad_input():
         if len(sl.input) == 4:
             if sl.input == sl.password:
                 # PIN correcto, pasar al estado abierto
-                print("Código correcto. Pasando a estado abierto.")
+                print("✅ Código correcto. Caja de seguridad abierta.")
                 sl.to_open()
             else:
                 # PIN incorrecto, agregar un intento fallido
-                print("Código incorrecto. Reiniciando input.")
+                print("⛔ Código incorrecto." +
+                      f" {sl.get_remaining_attempts() - 1} intentos restantes.")
                 await sl.handle_failed_attempt()
 
 
-def get_illumination_voltage():
-    """Devuelve el voltaje que el fotosensor LDR deja pasar. A mayor iluminación, menor voltaje."""
-    voltage = LDR_SENSOR.read_u16() / 65535 * RPI_VOLTAGE_REFERENCE_VOLTS
-    return voltage
-
-
-async def operations():
-    """Funcionamiento del candado inteligente."""
-
-
-async def operations():
+async def run_smart_lock():
     """En cada tick, leer la entrada del keypad 4x4 y actualizar el estado del candado.
     Luego, producir la salida del LED RGB en base al estado del candado y la iluminación del sensor LDR."""
-    print("Caja fuerte iniciada. Registre su clave: ")
+    print("Candado inteligente iniciado. Establezca su PIN: ")
 
     while True:
-        await handle_keypad_input()
+        # Procesar posible input del tablero 4x4
+        key = read_keypad()
+        await handle_keypad_input(key)
 
         # Actualizar el valor del sensor de iluminación
         sl.light_value = get_illumination_voltage()
         if (sl.state == State.BOOT_MODE or sl.state == State.LOCKED) and not sl.has_daylight():
             # Si no hay suficiente luz en estado cerrado o inicialización, pasar al estado deshabilitado
+            print("💤 Iluminación muy baja. Candado deshabilitado.")
             sl.to_disabled()
             continue
 
         if sl.state == State.DISABLED and sl.has_daylight():
             # Volvió la luz, salir del estado deshabilitado
+            print("💡 Iluminación suficiente. Candado habilitado.")
             if sl.password == "":
                 sl.to_boot_mode()
             else:
@@ -310,7 +317,7 @@ async def operations():
         if input_inactivity > KEYPAD_INPUT_TIMEOUT_MS:
             # Timeout por inactividad
             if sl.input != "":
-                print("Tiempo excedido. Borrando código ingresado.")
+                print("Tiempo de inactividad excedido. Input en blanco.")
                 sl.input = ""
                 await sl.led.blink()
 
@@ -322,10 +329,42 @@ def get_app_data() -> dict:
     return {"hola": "10"}
 
 
+def process_serial_port_command(command: str):
+    """Procesar el comando recibido por puerto serial."""
+    if command == "DISABLE_LDR":
+        sl.ldr_enabled = False
+        print("Sensor LDR habilitado.")
+    elif command == "ENABLE_LDR":
+        sl.ldr_enabled = True
+        print("Sensor LDR deshabilitado.")
+    else:
+        print("Comando no reconocido")
+
+
+async def listen_serial_port():
+    """Esperar comandos por puerto serial y procesar los comandos recibidos."""
+    import select
+    import sys
+
+    # Inicializar el objeto `Poll` para leer de `stdin`
+    poll_obj = select.poll()
+    poll_obj.register(sys.stdin, select.POLLIN)
+
+    while True:
+        # Esperar 1 milisegundo para ver si hay mensajes en `stdin`
+        poll_results = poll_obj.poll(1)
+        if poll_results:
+            command = sys.stdin.readline().strip()
+            process_serial_port_command(command)
+
+        await asyncio.sleep(0.1)
+
+
 async def main():
     await asyncio.gather(
-        operations(),                               # Código específico a cada grupo
-        micro_monitoring.monitoring(get_app_data)   # Monitoreo con el maestro
+        run_smart_lock(),
+        micro_monitoring.monitoring(get_app_data),  # Monitoreo con el maestro
+        listen_serial_port()
     )
 
 asyncio.run(main())
