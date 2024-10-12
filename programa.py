@@ -333,12 +333,18 @@ def process_serial_port_command(command: str):
     """Procesar el comando recibido por puerto serial."""
     if command == "DISABLE_LDR":
         sl.ldr_enabled = False
-        print("Sensor LDR habilitado.")
+        print("Sensor LDR deshabilitado por comando DISABLE_LDR.")
     elif command == "ENABLE_LDR":
         sl.ldr_enabled = True
-        print("Sensor LDR deshabilitado.")
+        print("Sensor LDR habilitado por comando ENABLE_LDR.")
+    elif command == "STOP_ALARM":
+        if sl.state == State.ALARMED:
+            sl.to_locked()
+            print("Alarma terminada por comando STOP_ALARM.")
+        else:
+            print("Comando sin efecto: la alarma no está activada.")
     else:
-        print("Comando no reconocido")
+        print("Comando no reconocido.")
 
 
 async def listen_serial_port():
@@ -355,7 +361,8 @@ async def listen_serial_port():
         poll_results = poll_obj.poll(1)
         if poll_results:
             command = sys.stdin.readline().strip()
-            process_serial_port_command(command)
+            if command:
+                process_serial_port_command(command)
 
         await asyncio.sleep(0.1)
 
