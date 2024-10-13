@@ -146,7 +146,6 @@ class SmartLock:
         """Transicionar al estado alarmado."""
         self.state = State.ALARMED
         self.input = ""
-        self.failed_attempts = []
         self.alarm_start_time = time.ticks_ms()
 
     def get_remaining_attempts(self):
@@ -232,6 +231,7 @@ async def handle_keypad_input(key: str):
 
     if sl.state == State.OPEN:
         sl.input += key
+        sl.input = sl.input[-4:]    # Solo quedarse con los últimos 4 caracteres
         if key == "*":
             # Cerrar caja y pasar al estado cerrado
             print("🔒 Caja de seguridad cerrada.")
@@ -306,6 +306,7 @@ async def run_smart_lock():
             duration = time.ticks_diff(time.ticks_ms(), sl.alarm_start_time)
             if duration >= ALARM_DURATION_MS:
                 # Finalizar el estado alarmado
+                sl.failed_attempts = []
                 sl.to_locked()
                 print("Tiempo de alarma terminado. Alarma desactivada.")
             else:
@@ -335,6 +336,7 @@ def process_serial_port_command(command: str):
         print("Sensor LDR habilitado por comando ENABLE_LDR.")
     elif command == "STOP_ALARM":
         if sl.state == State.ALARMED:
+            sl.failed_attempts = []
             sl.to_locked()
             print("Alarma terminada por comando STOP_ALARM.")
         else:
