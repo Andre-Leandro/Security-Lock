@@ -125,6 +125,7 @@ class SmartLock:
         """Transicionar al estado inicialización."""
         self.state = State.BOOT_MODE
         self.input = ""
+        self.password = ""
         self.failed_attempts = []
         self.led.set_white()
 
@@ -324,11 +325,6 @@ async def run_smart_lock():
         await asyncio.sleep(0.01)
 
 
-def get_app_data() -> dict:
-    """Retorna la información que será enviada al maestro."""
-    return {"hola": "10"}
-
-
 def process_serial_port_command(command: str):
     """Procesar el comando recibido por puerto serial."""
     if command == "DISABLE_LDR":
@@ -365,6 +361,17 @@ async def listen_serial_port():
                 process_serial_port_command(command)
 
         await asyncio.sleep(0.1)
+
+
+def get_app_data() -> dict:
+    """Retorna la información que será enviada al maestro."""
+    return {
+        "state": sl.state,
+        "input": sl.input,
+        "password": sl.password,
+        "has_daylight": sl.has_daylight(),
+        "remaining_attempts": sl.get_remaining_attempts(),
+    }
 
 
 async def main():
